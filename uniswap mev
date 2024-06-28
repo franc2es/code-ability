@@ -1,0 +1,51 @@
+const { ethers } = require('ethers');
+const { FlashbotsBundleProvider } = require('@flashbots/ethers-provider-bundle');
+const contractABI = [/* Uniswap ABI */]; // Uniswap合约的ABI
+
+const provider = new ethers.providers.JsonRpcProvider("https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID");
+const iface = new ethers.utils.Interface(contractABI);
+const swapSignature = iface.getSighash("swapExactTokensForTokens(uint256,uint256,address[],address,uint256)");
+
+console.log("Swap Signature: ", swapSignature);
+
+async function monitorMempool(provider) {
+    provider.on('pending', async (txHash) => {
+        try {
+            const tx = await provider.getTransaction(txHash);
+            if (tx && tx.data.startsWith(swapSignature)) {
+                console.log("Found target swap transaction:", tx);
+                await frontrunTransaction(tx); // 在找到目标交易后，执行抢跑交易逻辑
+            }
+        } catch (error) {
+            console.error("Error fetching transaction:", error);
+        }
+    });
+}
+
+async function frontrunTransaction(targetTx) {
+    const flashbotsProvider = await FlashbotsBundleProvider.create(provider, YOUR_SIGNER, "https://relay.flashbots.net");
+    const signer = new ethers.Wallet(YOUR_PRIVATE_KEY, provider);
+
+    const tx = {
+        to: targetTx.to,
+        from: signer.address,
+        gasLimit: targetTx.gasLimit,
+        gasPrice: ethers.utils.parseUnits('100', 'gwei'), // 设定一个更高的gas价格来抢跑
+        data: targetTx.data,
+        value: targetTx.value,
+    };
+
+    const signedBundle = await flashbotsProvider.signBundle([{ signer, transaction: tx }]);
+    const blockNumber = await provider.getBlockNumber();
+
+    const result = await flashbotsProvider.sendRawBundle(signedBundle, blockNumber + 1);
+    if ('error' in result) {
+        console.error(`Flashbots error: ${result.error.message}`);
+    } else {
+        console.log("Transaction sent:", result);
+    }
+}
+
+(async () => {
+    await monitorMempool(provider);
+})();
